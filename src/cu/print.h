@@ -44,10 +44,6 @@ void PRINT_cstring(Str cstr, OutStream os) {
 	OutStream_write(os, (const ubyte*)cstr, strlen(cstr));
 }
 
-void PRINT_String(String str, OutStream os) {
-	OutStream_write(os, str.data, str.size);
-}
-
 #define PRINT_ITEM(S, A) _Generic((A), \
 	char : PRINT_char, \
 	unsigned char : PRINT_byte, \
@@ -63,7 +59,10 @@ void PRINT_String(String str, OutStream os) {
 	char* : PRINT_cstring, \
 	Str : PRINT_cstring, \
 	Ptr : PRINT_ptr, \
-	String : PRINT_String, \
+	String : String_print, \
+	StringSpan : StringSpan_print, \
+	SmallString : SmallString_print, \
+	VString : VString_print, \
 	Printable : Printable_print \
 )((A), (S))
 

@@ -67,3 +67,5 @@ const u8 g_whitespace_tabs[] = {
 	9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
 	9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
 };
+
+#define STRING_WHITESPACE(N) LITERAL(String,.data=g_whitespace,.size=N)

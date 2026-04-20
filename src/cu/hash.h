@@ -30,10 +30,6 @@ uhash HASH_Ptr(Ptr value, uhash base) {
 	return (base ^ (usize)value) * FNV1a_PRIME;
 }
 
-uhash HASH_String(String value, uhash base) {
-	return FNV1a(value.data, value.size, base);
-}
-
 #define HASH_FN FNV1a
 #define HASH_BASE FNV1a_BASE
 #define HASH(value, base) _Generic((value), \
@@ -42,7 +38,7 @@ uhash HASH_String(String value, uhash base) {
 	u32 : HASH_u32, \
 	u64 : HASH_u64, \
 	Ptr : HASH_Ptr, \
-	String : HASH_String \
+	String : String_hash \
 )(value, base)
 
 #define HASH_COMBINE HASH_u64

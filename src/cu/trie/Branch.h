@@ -41,6 +41,8 @@ uint ZZTrieBranch_index(
 	UNREACHABLE;
 }
 
+// TODO potentially store branch size in pointer tag
+
 Trie TrieBranch_set(
 	Trie vthis,
 	const u8 *segment, TrieSize segment_size,
@@ -51,6 +53,11 @@ Trie TrieBranch_set(
 	TrieBranch *const this = Trie_data(vthis);
 
 	if (segment_size == 0) {
+		#if Trie_CONSERVATIVE
+			if (value == this->value)
+				return Trie_upcast(this, FLAG(TrieFlag, BRANCH) | isoccupied | isconst);
+		#endif
+
 		if (isconst) {
 			const uint this_size = ZZTrieBranch_size(this);
 			TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size));
@@ -74,36 +81,53 @@ Trie TrieBranch_set(
 		const uint idx = ZZTrieBranch_index(this, map_idx, map_bit);
 
 		if (isconst) {
+			#if Trie_CONSERVATIVE
+
+				Trie next = ZZTrie_set(Trie_const(this->next[idx]),
+					segment + 1, segment_size - 1, value, alc
+				);
+
+				if (ZZTrie_equal(next, this->next[idx]))
+					return Trie_upcast(this, FLAG(TrieFlag, BRANCH, CONST) | isoccupied);
+
+			#endif
+
 			const uint this_size = ZZTrieBranch_size(this);
 			TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size));
 			data->value = this->value;
 			memcpy(data->map, this->map, sizeof(this->map));
 
-			for (uint i = 0; i < this_size; i++) {
+			uint i = 0;
+			for (; i < idx; i++) {
 				data->next[i] = Trie_const(this->next[i]);
 			}
 
-			data->next[idx] = Trie_set(
-				data->next[idx],
-				segment + 1, segment_size - 1,
-				value, alc
-			);
+			#if !Trie_CONSERVATIVE
+				Trie next = ZZTrie_set(Trie_const(this->next[idx]),
+					segment + 1, segment_size - 1, value, alc
+				);
+			#endif
+
+			data->next[i] = next;
+			i++;
+
+			for (; i < this_size; i++) {
+				data->next[i] = Trie_const(this->next[i]);
+			}
+
 			return Trie_upcast(data, FLAG(TrieFlag, BRANCH) | isoccupied);
 		} else {
-			this->next[idx] = Trie_set(
+			this->next[idx] = ZZTrie_set(
 				this->next[idx],
 				segment + 1, segment_size - 1,
 				value, alc
 			);
 			return Trie_upcast(this, FLAG(TrieFlag, BRANCH) | isoccupied);
 		}
-	}
 
-	const Trie stub = Trie_create(segment + 1, segment_size - 1, value, alc);
-
-	if (isconst) {
-		const uint new_size = ZZTrieBranch_size(this) + 1;
-		TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(new_size));
+	} else if (isconst) {
+		const uint this_size = ZZTrieBranch_size(this);
+		TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size + 1));
 		data->value = this->value;
 		memcpy(data->map, this->map, sizeof(this->map));
 		data->map[map_idx] |= map_bit;
@@ -115,14 +139,14 @@ Trie TrieBranch_set(
 			data->next[i] = Trie_const(this->next[i]);
 		}
 
-		data->next[i] = stub;
-		i++;
+		data->next[i] = Trie_create(segment + 1, segment_size - 1, value, alc);
 
-		for (; i < new_size; i++) {
-			data->next[i] = Trie_const(this->next[i - 1]);
+		for (; i < this_size; i++) {
+			data->next[i + 1] = Trie_const(this->next[i]);
 		}
 
 		return Trie_upcast(data, FLAG(TrieFlag, BRANCH) | isoccupied);
+
 	} else {
 		const uint this_size = ZZTrieBranch_size(this);
 		TrieBranch *data = Allocator_resize(alc, this, ZZTrieBranch_allocsize(this_size + 1));
@@ -131,10 +155,18 @@ Trie TrieBranch_set(
 		const uint idx = ZZTrieBranch_index(data, map_idx, map_bit);
 
 		memmove(&data->next[idx + 1], &data->next[idx], (this_size - idx) * sizeof(Trie));
-		data->next[idx] = stub;
+		data->next[idx] = Trie_create(segment + 1, segment_size - 1, value, alc);
 
 		return Trie_upcast(data, FLAG(TrieFlag, BRANCH) | isoccupied);
 	}
+}
+
+ubyte ZZTrieBranch_first(uint64_t map[4]) {
+	if (map[0]) return (ubyte)stdc_trailing_zeros(map[0]) + (64 * 0);
+	if (map[1]) return (ubyte)stdc_trailing_zeros(map[1]) + (64 * 1);
+	if (map[2]) return (ubyte)stdc_trailing_zeros(map[2]) + (64 * 2);
+	if (map[3]) return (ubyte)stdc_trailing_zeros(map[3]) + (64 * 3);
+	UNREACHABLE;
 }
 
 Trie TrieBranch_unset(
@@ -142,8 +174,142 @@ Trie TrieBranch_unset(
 	const u8 *segment, TrieSize segment_size,
 	Allocator alc
 ) {
-	// TODO: implement TrieBranch_unset
-	PANIC("TrieBranch_unset: not implemented");
+	const TrieFlag isoccupied = Trie_flags(vthis) & FLAG(TrieFlag, OCCUPIED);
+	const TrieFlag isconst = Trie_flags(vthis) & FLAG(TrieFlag, CONST);
+	TrieBranch *const this = Trie_data(vthis);
+
+	if (segment_size == 0) {
+		if (isconst) {
+			const uint this_size = ZZTrieBranch_size(this);
+			TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size));
+			memcpy(data->map, this->map, sizeof(this->map));
+			for (uint i = 0; i < this_size; i++) {
+				data->next[i] = Trie_const(this->next[i]);
+			}
+			return Trie_upcast(data, FLAG(TrieFlag, BRANCH));
+		} else {
+			return Trie_upcast(this, FLAG(TrieFlag, BRANCH));
+		}
+	}
+
+	const u8 chr = segment[0];
+	const u8 map_idx = chr / 64;
+	const u64 map_bit = (u64)1 << (chr % 64);
+
+	if (!(this->map[map_idx] & map_bit)) {
+		return Trie_upcast(this, FLAG(TrieFlag, BRANCH) | isoccupied | isconst);
+	}
+
+
+	const uint idx = ZZTrieBranch_index(this, map_idx, map_bit);
+	uint this_size = ZZTrieBranch_size(this);
+
+	if (isconst) {
+		Trie next = ZZTrie_unset(Trie_const(this->next[idx]),
+			segment + 1, segment_size - 1, alc
+		);
+
+		#if Trie_CONSERVATIVE
+			if (ZZTrie_equal(next, this->next[idx]))
+				return Trie_upcast(this, FLAG(TrieFlag, BRANCH, CONST) | isoccupied);
+		#endif
+
+		if (Trie_isnull(next)) {
+			this_size--;
+			if (this_size == 0) UNREACHABLE;
+			if (this_size == 1) {
+				uint64_t map[4]; memcpy(map, this->map, sizeof(this->map));
+				map[map_idx] &= ~map_bit;
+
+				ubyte chr = ZZTrieBranch_first(map);
+
+				TrieSegment *data = Allocator_new(alc, ZZTrieSegment_allocsize(1));
+				data->value = this->value;
+				data->size = 1;
+				data->bytes[0] = chr;
+
+				// if index of the unset element was 0 the remaining one must be 1 and vice versa
+				data->next = Trie_const(this->next[idx == 0 ? 1 : 0]);
+
+				return Trie_upcast(data, isoccupied);
+			}
+
+			TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size));
+			memcpy(data->map, this->map, sizeof(this->map));
+			data->map[map_idx] &= ~map_bit;
+			data->value = this->value;
+
+			uint i = 0;
+			for (; i < idx; i++) {
+				data->next[i] = Trie_const(this->next[i]);
+			}
+
+			for (; i < this_size; i++) {
+				data->next[i] = Trie_const(this->next[i + 1]);
+			}
+
+			return Trie_upcast(data, FLAG(TrieFlag, BRANCH) | isoccupied);
+		} else {
+			TrieBranch *data = Allocator_new(alc, ZZTrieBranch_allocsize(this_size));
+			memcpy(data->map, this->map, sizeof(this->map));
+			data->value = this->value;
+
+			uint i = 0;
+			for (; i < idx; i++) {
+				data->next[i] = Trie_const(this->next[i]);
+			}
+
+			data->next[i] = next;
+			i++;
+
+			for (; i < this_size; i++) {
+				data->next[i] = Trie_const(this->next[i]);
+			}
+
+			return Trie_upcast(data, FLAG(TrieFlag, BRANCH) | isoccupied);
+		}
+
+	} else {
+		Trie next = ZZTrie_unset(this->next[idx],
+			segment + 1, segment_size - 1, alc
+		);
+
+		if (Trie_isnull(next)) {
+			this_size--;
+			if (this_size == 0) UNREACHABLE;
+			if (this_size == 1) {
+				uint64_t map[4]; memcpy(map, this->map, sizeof(this->map));
+				map[map_idx] &= ~map_bit;
+
+				ubyte chr = ZZTrieBranch_first(map);
+				Ptr value = this->value;
+
+				Trie next = this->next[idx == 0 ? 1 : 0];
+
+				#if Trie_CONSERVATIVE
+					TrieSegment *data = Allocator_resize(alc, this, ZZTrieSegment_allocsize(1));
+				#else
+					TrieSegment *data = (Ptr)this;
+				#endif
+
+				data->value = value;
+				data->size = 1;
+				data->bytes[0] = chr;
+
+				// if index of the unset element was 0 the remaining one must be 1 and vice versa
+				data->next = next;
+
+				return Trie_upcast(data, isoccupied);
+			}
+
+			this->map[map_idx] &= ~map_bit;
+			memmove(&this->next[idx], &this->next[idx + 1], (this_size - idx) * sizeof(Trie));
+			return Trie_upcast(this, FLAG(TrieFlag, BRANCH) | isoccupied);
+		} else {
+			this->next[idx] = next;
+			return Trie_upcast(this, FLAG(TrieFlag, BRANCH) | isoccupied);
+		}
+	}
 }
 
 void TrieBranch_destroy(Trie vthis, Allocator alc) {

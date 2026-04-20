@@ -1,14 +1,7 @@
 typedef struct {
-	usize offset;
-	u32 row;
-	u32 col;
-} SourcePos;
-
-typedef struct {
 	Arc_MEMBER rc;
-	u16 name_size;
 	Allocator alc;
-	ubyte *name;
+	SmallString name;
 	usize data_size;
 	ubyte data[];
 } Source;
@@ -48,27 +41,38 @@ void Source_release(SourceRef rthis) {
 	if (Arc_release(rthis.value)) {
 		auto this = Source_data(rthis);
 
-		if (this->name)
-			Allocator_delete(this->alc, this->name);
+		ubyte *name = (Ptr)SmallString_data(this->name);
+
+		if (name)
+			Allocator_delete(this->alc, name);
 
 		Allocator_delete(this->alc, (Ptr)this);
 	}
 }
 
-String Source_name(SourceRef rthis) {
+SmallString Source_name(SourceRef rthis) {
 	auto this = Source_data(rthis);
-	return (String){.data=this->name,.size=this->name_size};
+	return this->name;
+}
+
+SmallString ZZSource_makename(String name, Allocator alc) {
+	if (name.size) {
+		ubyte *namebuf = Allocator_new(alc, name.size);
+		memcpy(namebuf, name.data, name.size);
+		return SmallString_upcast(namebuf, name.size);
+	} else {
+		return SmallString_NULL;
+	}
 }
 
 
 SourceRef Source_fromstring(String name, String data, Allocator alc) {
 	Source *this = Allocator_new(alc, ZZSource_allocsize(data.size));
-	this->name = name.size ? Allocator_new(alc, name.size) : nullptr;
 	this->alc = alc;
+
+	this->name = ZZSource_makename(name, alc);
 	this->data_size = data.size;
-	this->name_size = usize_pcast16(name.size);
 	memcpy(this->data, data.data, data.size);
-	memcpy(this->name, name.data, name.size);
 
 	return (SourceRef){Arc_init(&this->rc)};
 }
@@ -93,9 +97,17 @@ SourceRef Source_fromfile(String name, FILE *file, Allocator alc) {
 
 	this->alc = alc;
 	this->data_size = data_size;
-	this->name = name.size ? Allocator_new(alc, name.size) : nullptr;
-	this->name_size = usize_pcast16(name.size);
-	memcpy(this->name, name.data, name.size);
+	this->name = ZZSource_makename(name, alc);
 
 	return (SourceRef){Arc_init(&this->rc)};
+}
+
+SourceRef Source_openfile(Str path, Allocator alc) {
+	FILE *file = fopen(path, "r");
+	if (!file) PANICF("Failed to open file ",path);
+
+	SourceRef ref = Source_fromfile(STRING(path), file, alc);
+
+	fclose(file);
+	return ref;
 }

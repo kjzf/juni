@@ -8,6 +8,13 @@ typedef enum : u8 {
 #define TrieFlag__BITS 3
 #define TrieFlag__MASK (0b111ULL)
 
+// whether to do micoroptimizations for conserving memory, e.g. resizing
+// segment allocations when it is unnecessary
+
+#ifndef Trie_CONSERVATIVE
+	#define Trie_CONSERVATIVE true
+#endif
+
 typedef struct {
 	Ptr value;
 } Trie;
@@ -46,6 +53,14 @@ Trie Trie_const(Trie this) {
 	return (Trie){(Ptr)((usize)this.value | FLAG(TrieFlag, CONST))};
 }
 
+Trie ZZTrie_orflags(Trie this, TrieFlag flags) {
+	return (Trie){(Ptr)((usize)this.value | flags)};
+}
+
+bool ZZTrie_equal(Trie this, Trie other) {
+	return (((usize)this.value ^ (usize)other.value) & FLAG_NOT(TrieFlag, CONST)) == 0;
+}
+
 typedef u16 TrieSize;
 
 typedef struct {
@@ -54,7 +69,7 @@ typedef struct {
 	Trie next[];
 } TrieBranch;
 
-static_assert(alignof(TrieBranch) > TrieFlag__BITS);
+static_assert(alignof(TrieBranch) > TrieFlag__MASK);
 
 usize ZZTrieBranch_allocsize(uint size) {
 	return offsetof(TrieBranch, next) + (size * sizeof(Trie));
@@ -67,7 +82,7 @@ typedef struct {
 	u8 bytes[];
 } TrieSegment;
 
-static_assert(alignof(TrieSegment) > TrieFlag__BITS);
+static_assert(alignof(TrieSegment) > TrieFlag__MASK);
 
 usize ZZTrieSegment_allocsize(TrieSize size) {
 	return offsetof(TrieSegment, bytes) + size;
@@ -86,20 +101,18 @@ Trie Trie_create(
 	const u8 *segment, TrieSize segment_size,
 	Ptr value, Allocator alc
 ) {
-	Trie stub = Trie_createstub(value, alc);
-
 	if (segment_size == 0)
-		return stub;
+		return Trie_createstub(value, alc);
 
 	TrieSegment *data = Allocator_new(alc, ZZTrieSegment_allocsize(segment_size));
-	data->next = stub;
+	data->next = Trie_createstub(value, alc);
 	data->value = nullptr;
 	data->size = segment_size;
 	memcpy(data->bytes, segment, segment_size);
 	return Trie_upcast(data, FLAG(TrieFlag));
 }
 
-Trie Trie_set(
+Trie ZZTrie_set(
 	Trie this,
 	const u8 *segment,
 	TrieSize segment_size,
@@ -107,7 +120,7 @@ Trie Trie_set(
 	Allocator alc
 );
 
-Trie Trie_unset(
+Trie ZZTrie_unset(
 	Trie this,
 	const u8 *segment,
 	TrieSize segment_size,
@@ -128,6 +141,22 @@ void Trie_print(
 #include "Branch.h"
 #include "Segment.h"
 
+Trie ZZTrie_set(
+	Trie this,
+	const u8 *segment,
+	TrieSize segment_size,
+	Ptr value,
+	Allocator alc
+) {
+	if (Trie_isnull(this)) UNREACHABLE;
+
+	if (Trie_isbranch(this)) {
+		return TrieBranch_set(this, segment, segment_size, value, alc);
+	} else {
+		return TrieSegment_set(this, segment, segment_size, value, alc);
+	}
+}
+
 Trie Trie_set(
 	Trie this,
 	const u8 *segment,
@@ -135,10 +164,25 @@ Trie Trie_set(
 	Ptr value,
 	Allocator alc
 ) {
+	if (Trie_isnull(this)) {
+		return Trie_create(segment, segment_size, value, alc);
+	}
+
+	return ZZTrie_set(this, segment, segment_size, value, alc);
+}
+
+Trie ZZTrie_unset(
+	Trie this,
+	const u8 *segment,
+	TrieSize segment_size,
+	Allocator alc
+) {
+	if (Trie_isnull(this)) UNREACHABLE;
+
 	if (Trie_isbranch(this)) {
-		return TrieBranch_set(this, segment, segment_size, value, alc);
+		return TrieBranch_unset(this, segment, segment_size, alc);
 	} else {
-		return TrieSegment_set(this, segment, segment_size, value, alc);
+		return TrieSegment_unset(this, segment, segment_size, alc);
 	}
 }
 
@@ -148,17 +192,21 @@ Trie Trie_unset(
 	TrieSize segment_size,
 	Allocator alc
 ) {
-	if (Trie_isbranch(this)) {
-		return TrieBranch_unset(this, segment, segment_size, alc);
-	} else {
-		return TrieSegment_unset(this, segment, segment_size, alc);
+
+	if (Trie_isnull(this)) {
+		return this;
 	}
+
+	return ZZTrie_unset(this, segment, segment_size, alc);
 }
 
 void Trie_destroy(
 	Trie this,
 	Allocator alc
 ) {
+	if (Trie_isnull(this))
+		return;
+
 	if (Trie_isbranch(this)) {
 		return TrieBranch_destroy(this, alc);
 	} else {
@@ -171,6 +219,9 @@ void Trie_print(
 	TrieSize depth,
 	OutStream os
 ) {
+	if (Trie_isnull(this))
+		return;
+
 	if (Trie_isbranch(this)) {
 		return TrieBranch_print(this, depth, os);
 	} else {

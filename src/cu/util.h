@@ -2,6 +2,8 @@
 #define UNIQUENUM(T, name) enum : T {name##_UNIQUENUM__} name
 #define STRUCTDECL(name) struct name name
 
+#define LITERAL(T,...) ((T){__VA_ARGS__})
+
 #ifdef __GNUC__
 	#define GCC_ERROR_MAX_DEPTH_REACHED _Pragma("GCC error \"max depth reached\"")
 
